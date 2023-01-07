@@ -1,0 +1,267 @@
+---
+title: "221103_hiep_yiming_fly_collab"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+Yiming collab with Panda Lab. D. melanogaster ALF/TRF samples across 3 ages, 3 genotypes.  
+
+![Breakdown of samples](sample_schema.png)
+
+```{r}
+library(aprilSALK)
+setwd("/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab")
+```
+
+Read in raw counts and create metadata dataframe. 
+```{r}
+raw <- aprilSALK::processRawTxt("/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab/raw.txt")
+anno <- processAnnoTxt("/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab/raw.txt")
+
+dim(raw)
+#[1] 17104   435
+
+#remove last three columns which contain the undetermined reads
+raw <- raw[,-c(433:435)]
+
+design <- data.frame(row.names = colnames(raw),
+                     age_sex = vapply(strsplit(colnames(raw), "[_]+"), `[`, 1, FUN.VALUE = character(1)),
+                     genotype = vapply(strsplit(colnames(raw), "[_]+"), `[`, 2, FUN.VALUE = character(1)),
+                     light = vapply(strsplit(colnames(raw), "[_]+"), `[`, 3, FUN.VALUE = character(1)),
+                     treatment = vapply(strsplit(colnames(raw), "[_]+"), `[`, 4, FUN.VALUE = character(1)),
+                     tissue = vapply(strsplit(colnames(raw), "[_]+"), `[`, 5, FUN.VALUE = character(1)),
+                     time = vapply(strsplit(colnames(raw), "[_]+"), `[`, 6, FUN.VALUE = character(1)),
+                     type = paste(vapply(strsplit(colnames(raw), "[_]+"), `[`, 2, FUN.VALUE = character(1)),
+                                  vapply(strsplit(colnames(raw), "[_]+"), `[`, 4, FUN.VALUE = character(1)),
+                                  sep="_")
+                     )
+```
+
+Run QC on all samples together. 
+```{r QC combined}
+
+exp <- myExplore(counts = raw,
+                 design = design,
+                 colData1 = "tissue",
+                 colData2 = "age_sex",
+                 formulaDE2 = "~ tissue",
+                 ref = "Heart",
+                 name = "drosophila_trf_explore",
+                 anno = anno)
+
+```
+
+Run QC on both tissues separately as they seem quite different based on above.
+```{r QC sep tissues}
+
+designHeart <- subset(design, tissue=="Heart")
+
+expHeart <- myExplore(counts = raw[row.names(designHeart)],
+                 design = designHeart,
+                 colData1 = "age_sex",
+                 colData2 = "genotype",
+                 formulaDE2 = "~ age_sex",
+                 ref = "3wm",
+                 name = "drosophila_heart_trf_explore",
+                 anno = anno)
+
+designIFM <- subset(design, tissue=="IFM")
+
+expIFM <- myExplore(counts = raw[row.names(designIFM)],
+                 design = designIFM,
+                 colData1 = "age_sex",
+                 colData2 = "genotype",
+                 formulaDE2 = "~ age_sex",
+                 ref = "3wm",
+                 name = "drosophila_IFM_trf_explore",
+                 anno = anno)
+```
+
+Differential expression testing of 18 base comparisons
+```{r DE}
+trfDIR <- "/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab/analysis/TRF_results"
+
+#comparisons
+TRFComps <- list(
+  c("Heart","WT_LD","3wm","WT"),
+  c("Heart","HF_LD","3wm","HFD"),
+  c("Heart","WT_LL","3wm","CRD"),
+  c("Heart","WT_LD","5wm","WT"),
+  c("Heart","HF_LD","5wm","HFD"),
+  c("Heart","WT_LL","5wm","CRD"),
+  c("Heart","WT_LD","7wm","WT"),
+  c("Heart","HF_LD","7wm","HFD"),
+  c("Heart","WT_LL","7wm","CRD"),
+  c("IFM","WT_LD","3wm","WT"),
+  c("IFM","HF_LD","3wm","HFD"),
+  c("IFM","WT_LL","3wm","CRD"),
+  c("IFM","WT_LD","5wm","WT"),
+  c("IFM","HF_LD","5wm","HFD"),
+  c("IFM","WT_LL","5wm","CRD"),
+  c("IFM","WT_LD","7wm","WT"),
+  c("IFM","HF_LD","7wm","HFD"),
+  c("IFM","WT_LL","7wm","CRD")
+)
+
+#run QC, differential expression testing, and GO analysis on above comparisons
+TRFresults <- lapply(X = TRFComps,FUN = function(X){
+  d <- subset(design, tissue==X[1] & type==X[2] & age_sex==X[3])
+  print(d)
+  r <- raw[,row.names(d)]
+  print(head(r))
+  
+  subDir <- paste0(X[1],"_",X[3],"_",X[4],"_ALFvTRF")
+  dir.create(file.path(trfDIR, subDir), showWarnings = FALSE)
+  setwd(file.path(trfDIR, subDir))
+  print(file.path(trfDIR, subDir))
+  
+  res <- aprilSALK::myDiffExp(counts = r,
+                              design = d,
+                              colData1 = "light",
+                              colData2 = "time",
+                              formulaEdgR = NULL,
+                              formulaDE2 = "~ time + light",
+                              ref = "ALF",
+                              name = paste0(X[1],"_",X[3],"_",X[4],"_ALFvTRF.deseq2"),
+                              org = "dmelanogaster",
+                              anno = anno,
+                              db = c("geneontology_Biological_Process","pathway_KEGG"),
+                              runWebG = T,
+                              fdr = 0.05,
+                              lfc = 1)
+  return(res)
+})
+
+#stopped when starting IFM to run idats
+
+saveRDS(object = TRFresults,file = "/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab/analysis/TRFresults.RDS")
+
+```
+
+Running MetaCycle using each age as a replicate across time points. 
+
+```{r metacycle replicates}
+
+library("MetaCycle")
+
+#change time to 24 hour cycle
+design$time24 <- format(as.POSIXct(design$time,format='%I%p'),format="%H")
+design$time24 <- as.numeric(design$time24)
+design$Indiv <- paste(design$age_sex,design$light,sep=".")
+
+MComps <- list(
+  c("Heart","WT_LD","WT","ALF"),
+  c("Heart","HF_LD","HFD","ALF"),
+  c("Heart","WT_LL","CRD","ALF"),
+  c("IFM","WT_LD","WT","ALF"),
+  c("IFM","HF_LD","HFD","ALF"),
+  c("IFM","WT_LL","CRD","ALF"),
+  c("Heart","WT_LD","WT","TRF"),
+  c("Heart","HF_LD","HFD","TRF"),
+  c("Heart","WT_LL","CRD","TRF"),
+  c("IFM","WT_LD","WT","TRF"),
+  c("IFM","HF_LD","HFD","TRF"),
+  c("IFM","WT_LL","CRD","TRF")
+)
+
+#write out here
+metaCdir <- "/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab/analysis/metaCycle"
+
+MCresults <- lapply(X = MComps,FUN = function(X){
+  d <- subset(design, tissue==X[1] & type==X[2] & light==X[4])
+  print(d)
+  r <- raw[,row.names(d)]
+  print(head(r))
+  
+  subDir <- paste0(X[1],"_",X[3],"_metaCycle")
+  dir.create(file.path(metaCdir, subDir), showWarnings = FALSE)
+  setwd(file.path(metaCdir, subDir))
+  print(file.path(metaCdir, subDir))
+  
+  #write out counts for metacycle
+  write.csv(x=r,file = paste0(X[1],"_",X[3],"_",X[4],"_counts_metaCycle.csv"),quote = F) 
+  
+  #run meta2d with standard parameters and write out to file
+  meta2d(infile = paste0(X[1],"_",X[3],"_",X[4],"_counts_metaCycle.csv"),
+               outdir = file.path(metaCdir, subDir),
+               filestyle = "csv",
+               timepoints = as.numeric(d$time24),
+               outputFile = T,
+               outIntegration = "both",
+               parallelize = T,
+               nCores = 16)
+  #run meta2d with standard parameters and write to dataframe
+  MC <- meta2d(infile = paste0(X[1],"_",X[3],"_",X[4],"_counts_metaCycle.csv"),
+               outdir = file.path(metaCdir, subDir),
+               filestyle = "csv",
+               timepoints = as.numeric(d$time24),
+               outputFile = F,
+               parallelize = T,
+               nCores = 16)
+  return(MC)
+})
+#save metacycle results for above comparisons
+saveRDS(object = MCresults, file="/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab/analysis/metaCycle/MCresults.RDS")
+```
+
+Code to run Metacycle on each time point separately. Not yet run, not updated. 
+```{r,eval=FALSE}
+
+TRFComps <- list(
+  #c("Heart","WT_LD","3wm","WT"),
+  c("Heart","HF_LD","3wm","HFD"),
+  c("Heart","WT_LL","3wm","CRD"),
+  c("Heart","WT_LD","5wm","WT"),
+  c("Heart","HF_LD","5wm","HFD"),
+  c("Heart","WT_LL","5wm","CRD"),
+  c("Heart","WT_LD","7wm","WT"),
+  c("Heart","HF_LD","7wm","HFD"),
+  c("Heart","WT_LL","7wm","CRD"),
+  c("IFM","WT_LD","3wm","WT"),
+  c("IFM","HF_LD","3wm","HFD"),
+  c("IFM","WT_LL","3wm","CRD"),
+  c("IFM","WT_LD","5wm","WT"),
+  c("IFM","HF_LD","5wm","HFD"),
+  c("IFM","WT_LL","5wm","CRD"),
+  c("IFM","WT_LD","7wm","WT"),
+  c("IFM","HF_LD","7wm","HFD"),
+  c("IFM","WT_LL","7wm","CRD")
+)
+
+metaCdir <- "/gpfs/analyses/april/PANDA/Hiep/221103_hiep_yiming_fly_collab/analysis/metaCycle"
+
+MCresults <- lapply(X = TRFComps,FUN = function(X){
+  d <- subset(design, tissue==X[1] & type==X[2] & age_sex==X[3])
+  print(d)
+  r <- raw[,row.names(d)]
+  print(head(r))
+  
+  subDir <- paste0(X[1],"_",X[3],"_",X[4],"_metaCycle")
+  dir.create(file.path(metaCdir, subDir), showWarnings = FALSE)
+  setwd(file.path(metaCdir, subDir))
+  print(file.path(metaCdir, subDir))
+  
+  #subDirTRF <- paste0(X[1],"_",X[3],"_",X[4],"_ALFvTRF")
+  #dds <- readRDS(file = file.path(trfDIR, subDirTRF, paste0(X[1],"_",X[3],"_",X[4],"_ALFvTRF.deseq2_dds.RDS")))
+  
+  write.csv(x=r,file = paste0(X[1],"_",X[3],"_",X[4],"_counts_metaCycle.csv"),quote = F) #counts(dds, normalized = FALSE)
+  write.csv(x=d,file = paste0(X[1],"_",X[3],"_",X[4],"_design_metaCycle.csv"),quote = F)
+  
+  MC <- meta3d(datafile = paste0(X[1],"_",X[3],"_",X[4],"_counts_metaCycle.csv"),
+               designfile = paste0(X[1],"_",X[3],"_",X[4],"_design_metaCycle.csv"),
+               outdir = file.path(metaCdir, subDir),
+               filestyle = "csv",
+               design_libColm = 1,  
+               design_subjectColm = 10,
+               timeUnit = "hour",
+               design_hrColm = 9,
+               design_groupColm = 4,
+               parallelize = T,
+               nCores = 16
+              )
+  return(MC)
+})
+
+```
+
